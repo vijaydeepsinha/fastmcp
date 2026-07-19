@@ -7,6 +7,8 @@ strict_input_validation=False, the default).
 """
 
 import json
+from contextvars import ContextVar
+from typing import Any, cast
 
 import pytest
 from mcp_types import TextContent
@@ -14,6 +16,8 @@ from pydantic import BaseModel
 
 from fastmcp import Client, FastMCP
 from fastmcp.exceptions import ToolError
+from fastmcp.server.middleware import Middleware, MiddlewareContext
+from fastmcp.tools.function_tool import _strict_input_validation
 
 
 class UserProfile(BaseModel):
@@ -354,11 +358,18 @@ class TestEdgeCases:
 class TestCallableStrictInputValidation:
     """Per-request strict mode via a zero-argument callable."""
 
-    async def test_callable_toggles_strict_per_invocation(self):
-        """Callable strict setting is resolved on each tool call."""
+    async def test_callable_resolves_on_each_tool_call(self):
+        """The callable is re-evaluated for every tool invocation.
+
+        Multi-tenant servers flip strictness per request; a single cached
+        boolean at startup would defeat that.
+        """
         strict_enabled = False
+        resolve_calls = 0
 
         def resolve_strict() -> bool:
+            nonlocal resolve_calls
+            resolve_calls += 1
             return strict_enabled
 
         mcp = FastMCP("TestServer", strict_input_validation=resolve_strict)
@@ -368,21 +379,38 @@ class TestCallableStrictInputValidation:
             return a + b
 
         async with Client(mcp) as client:
-            strict_enabled = False
             result = await client.call_tool("add", {"a": "1", "b": "2"})
             assert isinstance(result.content[0], TextContent)
             assert result.content[0].text == "3"
+            assert resolve_calls == 1
 
             strict_enabled = True
-            with pytest.raises(Exception):
+            with pytest.raises(ToolError, match="validation"):
                 await client.call_tool("add", {"a": "1", "b": "2"})
+            assert resolve_calls == 2
 
-    async def test_callable_reads_middleware_context(self):
-        """Callable can read request-scoped state set by middleware."""
-        from contextvars import ContextVar
+    async def test_callable_coerces_without_middleware_context(self):
+        """When no middleware sets request state, the callable sees its default."""
+        strict_for_request: ContextVar[bool] = ContextVar(
+            "strict_for_request", default=False
+        )
 
-        from fastmcp.server.middleware import Middleware, MiddlewareContext
+        def resolve_strict() -> bool:
+            return strict_for_request.get()
 
+        mcp = FastMCP("TestServer", strict_input_validation=resolve_strict)
+
+        @mcp.tool
+        def double(n: int) -> int:
+            return n * 2
+
+        async with Client(mcp) as client:
+            result = await client.call_tool("double", {"n": "2"})
+            assert isinstance(result.content[0], TextContent)
+            assert result.content[0].text == "4"
+
+    async def test_callable_honors_contextvar_set_by_middleware(self):
+        """Middleware can drive per-request strictness via a ContextVar."""
         strict_for_request: ContextVar[bool] = ContextVar(
             "strict_for_request", default=False
         )
@@ -406,16 +434,69 @@ class TestCallableStrictInputValidation:
             return n * 2
 
         async with Client(mcp) as client:
-            with pytest.raises(Exception):
+            with pytest.raises(ToolError, match="validation"):
                 await client.call_tool("double", {"n": "2"})
 
             result = await client.call_tool("double", {"n": 2})
             assert isinstance(result.content[0], TextContent)
             assert result.content[0].text == "4"
 
-    def test_invalid_strict_input_validation_type_raises(self):
-        from typing import Any, cast
+    async def test_callable_return_value_is_coerced_with_bool(self):
+        """Callable results are passed through bool() before validation."""
+        resolve_state = {"value": 0}
 
+        def resolve_strict():
+            return resolve_state["value"]
+
+        mcp = FastMCP(
+            "TestServer",
+            strict_input_validation=cast(Any, resolve_strict),
+        )
+
+        @mcp.tool
+        def add(a: int, b: int) -> int:
+            return a + b
+
+        async with Client(mcp) as client:
+            result = await client.call_tool("add", {"a": "1", "b": "2"})
+            assert isinstance(result.content[0], TextContent)
+            assert result.content[0].text == "3"
+
+            resolve_state["value"] = 1
+            with pytest.raises(ToolError, match="validation"):
+                await client.call_tool("add", {"a": "1", "b": "2"})
+
+    async def test_callable_exception_surfaces_as_tool_error(self):
+        """Errors from the callable propagate as tool failures, not silent fallback."""
+
+        def resolve_strict() -> bool:
+            raise RuntimeError("tenant lookup failed")
+
+        mcp = FastMCP("TestServer", strict_input_validation=resolve_strict)
+
+        @mcp.tool
+        def add(a: int, b: int) -> int:
+            return a + b
+
+        async with Client(mcp) as client:
+            with pytest.raises(ToolError, match="tenant lookup failed"):
+                await client.call_tool("add", {"a": 1, "b": 2})
+
+    def test_strict_input_validation_without_request_context(self):
+        """Outside a request, strict mode stays off and the callable is not invoked."""
+        resolve_calls = 0
+
+        def resolve_strict() -> bool:
+            nonlocal resolve_calls
+            resolve_calls += 1
+            return True
+
+        FastMCP("TestServer", strict_input_validation=resolve_strict)
+
+        assert _strict_input_validation() is False
+        assert resolve_calls == 0
+
+    def test_invalid_strict_input_validation_type_raises(self):
         with pytest.raises(TypeError, match="strict_input_validation must be"):
             FastMCP("TestServer", strict_input_validation=cast(Any, "yes"))
 

@@ -141,15 +141,11 @@ async def test_task_submission_honors_strict_input_validation():
     assert "notifications/tasks/status" not in recorder.methods
 
 
-async def test_task_submission_honors_callable_strict_input_validation():
-    """Callable strict settings apply at task submission, not just sync calls."""
-    strict_enabled = False
-
-    def resolve_strict() -> bool:
-        return strict_enabled
-
+async def test_task_submission_coerces_when_callable_returns_false():
+    """Task submissions coerce lax inputs when the resolver returns False."""
     server = FastMCP(
-        "callable-strict-task-server", strict_input_validation=resolve_strict
+        "callable-coerce-task-server",
+        strict_input_validation=lambda: False,
     )
 
     @server.tool(task=True)
@@ -157,14 +153,48 @@ async def test_task_submission_honors_callable_strict_input_validation():
         return n * n
 
     async with Client(server) as client:
-        strict_enabled = True
-        with pytest.raises(ToolError):
+        task = await client.call_tool("square", {"n": "4"}, task=True)
+        assert not task.returned_immediately
+        result = await task.result()
+        assert result.data == 16
+
+
+async def test_task_submission_honors_callable_strict_input_validation():
+    """Callable strict settings apply at task submission, not just sync calls.
+
+    When the resolver returns ``True``, the task path must reject lax coercions
+    before any task state is created — mirroring
+    ``test_task_submission_honors_strict_input_validation``.
+    """
+
+    class _Recorder(MessageHandler):
+        def __init__(self):
+            super().__init__()
+            self.methods: list[str] = []
+
+        async def on_notification(self, message: mcp_types.ServerNotification) -> None:
+            self.methods.append(message.method)
+
+    server = FastMCP(
+        "callable-strict-task-server",
+        strict_input_validation=lambda: True,
+    )
+
+    @server.tool(task=True)
+    async def square(n: int) -> int:
+        return n * n
+
+    recorder = _Recorder()
+    async with Client(server, message_handler=recorder) as client:
+        with pytest.raises(ToolError, match="validation"):
             await client.call_tool("square", {"n": "1"})
 
         task = await client.call_tool("square", {"n": "1"}, task=True)
         assert task.returned_immediately
-        with pytest.raises(ToolError):
+        with pytest.raises(ToolError, match="validation"):
             await task.result()
+
+    assert "notifications/tasks/status" not in recorder.methods
 
 
 async def test_task_submission_valid_argument_under_strict_validation():
