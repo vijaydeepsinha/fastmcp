@@ -98,14 +98,13 @@ def build_skill_entry(skill: SkillInfo, main_file_name: str) -> SkillEntry:
     then, the extension's real-provider catalog reflects exactly what the
     existing permissive resources already serve.
 
-    `frontmatter.name` is forced to `skill.name` (the directory name) because
-    the extension identifies a skill by the URI of its `SKILL.md`, whose final
-    path segment SEP-2640 requires to equal `frontmatter.name`; this provider
-    already requires the directory name as the skill's identity, so the two
-    can never legitimately disagree.
+    `frontmatter.name` is exactly what the skill's `SKILL.md` declares (SEP-2640:
+    "The extension's `frontmatter.name` remains exact"); only a skill whose
+    frontmatter omits `name` entirely falls back to the directory name, matching
+    how `description` already falls back to the provider's parsed description.
     """
     frontmatter: dict[str, Any] = dict(skill.frontmatter)
-    frontmatter["name"] = skill.name
+    frontmatter.setdefault("name", skill.name)
     frontmatter.setdefault("description", skill.description)
 
     resources = [

@@ -981,14 +981,20 @@ class TestSkillsSourceContract:
         assert entry.frontmatter.name == "my-skill"
         assert await provider.get_skill_entry("skill://missing/SKILL.md") is None
 
-    async def test_frontmatter_name_forced_to_directory_name(self, tmp_path: Path):
-        """A mismatched frontmatter `name` is normalized to the directory
-        name, since the extension requires the two to agree."""
+    @pytest.mark.parametrize(
+        ("frontmatter", "expected_name"),
+        [
+            ("name: declared-name\ndescription: d", "declared-name"),
+            ("description: d", "real-name"),  # missing name defaults to dir name
+        ],
+    )
+    async def test_frontmatter_name_exact_or_defaulted(
+        self, tmp_path: Path, frontmatter: str, expected_name: str
+    ):
+        # frontmatter.name is exact; only a missing name defaults to the dir name
         skill_dir = tmp_path / "real-name"
         skill_dir.mkdir()
-        (skill_dir / "SKILL.md").write_text(
-            "---\nname: wrong-name\ndescription: d\n---\nBody"
-        )
+        (skill_dir / "SKILL.md").write_text(f"---\n{frontmatter}\n---\nBody")
         provider = SkillProvider(skill_dir)
         entry = (await provider.list_skill_entries())[0]
-        assert entry.frontmatter.name == "real-name"
+        assert entry.frontmatter.name == expected_name
