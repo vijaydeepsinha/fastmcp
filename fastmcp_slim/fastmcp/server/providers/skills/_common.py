@@ -7,6 +7,9 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
+
+from fastmcp.utilities.skills import SkillEntry, SkillFrontmatter, SkillResourceEntry
 
 
 @dataclass
@@ -83,6 +86,42 @@ def compute_file_hash(path: Path) -> str:
         for chunk in iter(lambda: f.read(8192), b""):
             sha256.update(chunk)
     return f"sha256:{sha256.hexdigest()}"
+
+
+def build_skill_entry(skill: SkillInfo, main_file_name: str) -> SkillEntry:
+    """Adapt a provider's loosely-parsed `SkillInfo` into a SEP-2640 `SkillEntry`.
+
+    This is the PR 1 bridge from the existing, permissive filesystem parsing
+    (`parse_frontmatter`, `scan_skill_files`) to the strict Skills extension
+    wire model -- it does not change discovery or parsing behavior. A future
+    PR replaces this with byte-accurate, strictly-validated snapshots; until
+    then, the extension's real-provider catalog reflects exactly what the
+    existing permissive resources already serve.
+
+    `frontmatter.name` is forced to `skill.name` (the directory name) because
+    the extension identifies a skill by the URI of its `SKILL.md`, whose final
+    path segment SEP-2640 requires to equal `frontmatter.name`; this provider
+    already requires the directory name as the skill's identity, so the two
+    can never legitimately disagree.
+    """
+    frontmatter: dict[str, Any] = dict(skill.frontmatter)
+    frontmatter["name"] = skill.name
+    frontmatter.setdefault("description", skill.description)
+
+    resources = [
+        SkillResourceEntry(
+            uri=f"skill://{skill.name}/{quote(f.path, safe='/')}",
+            digest=f.hash,
+            size=f.size,
+        )
+        for f in skill.files
+    ]
+
+    return SkillEntry(
+        uri=f"skill://{skill.name}/{quote(main_file_name, safe='/')}",
+        frontmatter=SkillFrontmatter.model_validate(frontmatter),
+        resources=resources,
+    )
 
 
 def scan_skill_files(skill_dir: Path) -> list[SkillFileInfo]:
