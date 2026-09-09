@@ -24,6 +24,17 @@ SKILLS_EXTENSION_ID = "io.modelcontextprotocol/skills"
 _DIGEST_PATTERN = re.compile(r"^sha256:[0-9a-f]{64}$")
 
 
+def missing_capability_error_data() -> dict[str, object]:
+    """Build the `data.requiredCapabilities` payload for a -32021 error.
+
+    `skills/list`/`skills/get` called without the client opting the Skills
+    extension in for the request return this so the client learns which
+    capability to declare, mirroring the tasks extension's
+    `missing_capability_error_data`.
+    """
+    return {"requiredCapabilities": {"extensions": {SKILLS_EXTENSION_ID: {}}}}
+
+
 # -----------------------------------------------------------------------------
 # SEP-2640 wire protocol models
 #

@@ -58,6 +58,7 @@ from fastmcp.utilities.skills import (
     ListSkillsResult,
     SkillEntry,
     SkillsExtensionSettings,
+    missing_capability_error_data,
 )
 
 from ._source import _SkillsSource
@@ -79,6 +80,7 @@ def _missing_capability_error(method: str) -> MCPError:
             f"{method} targets the Skills extension ({SKILLS_EXTENSION_ID}); "
             "the client did not declare it for this request."
         ),
+        data=missing_capability_error_data(),
     )
 
 

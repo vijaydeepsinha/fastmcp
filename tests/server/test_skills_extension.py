@@ -12,8 +12,14 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from pathlib import Path
+from types import SimpleNamespace
+from typing import cast
 
 import pytest
+from mcp.server.context import ServerRequestContext
+from mcp.server.session import ServerSession
+from mcp.shared.exceptions import MCPError
+from mcp_types import MISSING_REQUIRED_CLIENT_CAPABILITY
 from pydantic import AnyUrl
 
 from fastmcp import Client, FastMCP
@@ -25,9 +31,11 @@ from fastmcp.server.providers.base import Provider
 from fastmcp.server.providers.skills import SkillProvider, SkillsDirectoryProvider
 from fastmcp.utilities.skills import (
     SKILLS_EXTENSION_ID,
+    GetSkillRequestParams,
     SkillEntry,
     SkillFrontmatter,
     SkillResourceEntry,
+    missing_capability_error_data,
 )
 
 
@@ -188,6 +196,23 @@ class TestProtocolVersionGating:
                 await client.list_skills()
 
 
+def _bare_request_context(method: str, params: dict) -> ServerRequestContext:
+    """A request context with no Skills capability in its `_meta`.
+
+    Used to exercise `SkillsExtension`'s server-side opt-in check directly,
+    bypassing the client-side `SkillsClientExtension` guard so the actual
+    wire-level -32021 rejection is proven, not just the client's own
+    precondition.
+    """
+    return ServerRequestContext(
+        session=cast(ServerSession, SimpleNamespace()),
+        lifespan_context={},
+        protocol_version="2026-07-28",
+        method=method,
+        params=params,
+    )
+
+
 class TestExtensionNegotiation:
     async def test_rejects_request_without_opt_in(self):
         mcp = FastMCP("t")
@@ -198,6 +223,42 @@ class TestExtensionNegotiation:
         async with Client(mcp) as client:
             with pytest.raises(RuntimeError, match="SkillsClientExtension"):
                 await client.list_skills()
+
+    async def test_list_without_opt_in_raises_missing_capability_server_side(self):
+        """`skills/list` called without the declared capability gets -32021,
+        proven against the extension's handler directly (not the client-side
+        guard, which never reaches the server for this case)."""
+        mcp = FastMCP("t")
+        source = InMemorySkillsSource([_entry("a")])
+        mcp.add_provider(source)
+        extension = SkillsExtension(providers=[source])
+        mcp.add_extension(extension)
+
+        srctx = _bare_request_context("skills/list", {})
+        with pytest.raises(MCPError) as exc_info:
+            await extension._handle_list(srctx, None)
+        error = exc_info.value.error
+        assert error.code == MISSING_REQUIRED_CLIENT_CAPABILITY
+        assert error.data == missing_capability_error_data()
+
+    async def test_get_without_opt_in_raises_missing_capability_server_side(self):
+        """`skills/get` called without the declared capability gets -32021,
+        with the same `data.requiredCapabilities` payload the tasks
+        extension returns for its own -32021 error."""
+        mcp = FastMCP("t")
+        source = InMemorySkillsSource([_entry("a")])
+        mcp.add_provider(source)
+        extension = SkillsExtension(providers=[source])
+        mcp.add_extension(extension)
+
+        uri = "skill://a/SKILL.md"
+        srctx = _bare_request_context("skills/get", {"uri": uri})
+        params = GetSkillRequestParams.model_validate({"uri": uri})
+        with pytest.raises(MCPError) as exc_info:
+            await extension._handle_get(srctx, params)
+        error = exc_info.value.error
+        assert error.code == MISSING_REQUIRED_CLIENT_CAPABILITY
+        assert error.data == missing_capability_error_data()
 
 
 class TestListSkills:
