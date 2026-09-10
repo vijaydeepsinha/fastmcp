@@ -998,3 +998,26 @@ class TestSkillsSourceContract:
         provider = SkillProvider(skill_dir)
         entry = (await provider.list_skill_entries())[0]
         assert entry.frontmatter.name == expected_name
+
+    async def test_declared_name_directory_mismatch_is_not_yet_validated(
+        self, tmp_path: Path
+    ):
+        """Known PR 1 gap, tracked for PR 2: SEP-2640 requires the final
+        `<skill-path>` segment of `uri` to equal `frontmatter.name` (mirroring
+        the Agent Skills spec's own name-matches-directory rule), but nothing
+        in PR 1 validates that relationship -- that's issue #5016's "Strict
+        skill snapshots" step 5, explicit PR 2 scope. This pins today's
+        permissive behavior (the mismatch passes through unchanged) so the
+        test breaks loudly, rather than silently, once PR 2 adds the
+        validation and this entry starts being rejected or reconciled
+        instead."""
+        skill_dir = tmp_path / "dir-name"
+        skill_dir.mkdir()
+        (skill_dir / "SKILL.md").write_text(
+            "---\nname: declared-name\ndescription: d\n---\nBody"
+        )
+        provider = SkillProvider(skill_dir)
+        entry = (await provider.list_skill_entries())[0]
+
+        assert entry.frontmatter.name == "declared-name"
+        assert entry.uri == "skill://dir-name/SKILL.md"

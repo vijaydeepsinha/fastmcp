@@ -102,6 +102,17 @@ def build_skill_entry(skill: SkillInfo, main_file_name: str) -> SkillEntry:
     "The extension's `frontmatter.name` remains exact"); only a skill whose
     frontmatter omits `name` entirely falls back to the directory name, matching
     how `description` already falls back to the provider's parsed description.
+
+    Known gap, deferred to PR 2: SEP-2640 also requires "The final `<skill-path>`
+    segment of the entry's `uri` MUST equal `frontmatter.name`" (Frontmatter),
+    mirroring the Agent Skills spec's own name-matches-directory rule. `uri`
+    here is always built from `skill.name` (the directory), while `frontmatter`
+    keeps whatever the author declared, so a `SKILL.md` whose declared `name`
+    disagrees with its directory produces an entry that violates this MUST with
+    no error. Validating (and rejecting or reconciling) that relationship is
+    explicitly PR 2 work -- issue #5016's "Strict skill snapshots" step 5,
+    "Validate required Agent Skills fields and the URI/name relationship" --
+    not something PR 1's bridge over the existing permissive parser attempts.
     """
     frontmatter: dict[str, Any] = dict(skill.frontmatter)
     frontmatter.setdefault("name", skill.name)

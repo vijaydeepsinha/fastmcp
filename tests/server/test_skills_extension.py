@@ -422,3 +422,28 @@ class TestGetSkill:
             with pytest.raises(MCPError) as exc_info:
                 await client.get_skill("skill://secret/SKILL.md")
             assert exc_info.value.code == -32602
+
+    @pytest.mark.parametrize(
+        "malformed_uri",
+        [
+            "",
+            "not-a-uri-at-all",
+            "https://example.com/skill/SKILL.md",
+            "skill://",
+        ],
+    )
+    async def test_malformed_uri_is_invalid_params(self, malformed_uri: str):
+        """A syntactically malformed skill URI -- not merely a well-formed but
+        nonexistent one -- must still report -32602, the same as an unknown or
+        unauthorized URI, rather than raising an unrelated error."""
+        from mcp.shared.exceptions import MCPError
+
+        mcp = FastMCP("t")
+        source = InMemorySkillsSource([_entry("a")])
+        mcp.add_provider(source)
+        mcp.add_extension(SkillsExtension(providers=[source]))
+
+        async with _skills_client(mcp) as client:
+            with pytest.raises(MCPError) as exc_info:
+                await client.get_skill(malformed_uri)
+            assert exc_info.value.code == -32602

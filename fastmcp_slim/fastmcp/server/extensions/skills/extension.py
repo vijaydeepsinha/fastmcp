@@ -160,11 +160,20 @@ class SkillsExtension(ServerExtension):
         """Whether the caller may see `entry`, using the same session
         visibility and component authorization decisions Resources uses.
 
-        Checking the entry's main `SKILL.md` resource is sufficient: providers
-        in this release back every skill through a concrete `Resource` for the
-        main file (see `SkillProvider._list_resources`), and `get_resource`
-        already applies session-transform visibility and auth checks without
-        dispatching the middleware chain (unlike `list_resources(run_middleware=True)`).
+        This checks only the entry's main `SKILL.md` resource, not every URI
+        in `entry.resources`. That is a deliberate PR 1 simplification, not a
+        spec-complete visibility check: today's providers never set `auth` or
+        disable individual supporting files or the `supporting_files="template"`
+        template independently of the main file, so main-file visibility is
+        currently equivalent to whole-skill visibility in practice. A future
+        PR ("support both concrete-resource and resource-template backing",
+        SEP-2640's per-resource visibility requirement in Resource backing)
+        must check every supporting resource and the supporting-file template
+        too -- checking `get_resource_template` in `"template"` mode is
+        required there, since a template-backed supporting file has no
+        concrete `Resource` for `get_resource` to find, and naively checking
+        every `entry.resources` URI via `get_resource` today would wrongly
+        mark every skill using the default `"template"` mode as invisible.
         """
         return await self.server.get_resource(entry.uri) is not None
 

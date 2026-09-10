@@ -182,6 +182,14 @@ async def list_skills(client: Client) -> list[SkillSummary]:
     Discovers skills by finding resources with URIs matching the
     `skill://{name}/SKILL.md` pattern.
 
+    Predates the SEP-2640 Skills extension and works against any server that
+    exposes skills as plain resources, with no server-side opt-in required.
+    For a server that registers `SkillsExtension`, prefer the protocol-level
+    `Client.list_skills()` (`ClientSkillsMixin`, requires
+    `Client(..., extensions=[SkillsClientExtension()])`), which returns typed
+    `SkillEntry` objects rather than `SkillSummary` and works even when a
+    skill's supporting files aren't individually listed as resources.
+
     Args:
         client: Connected FastMCP client
 
