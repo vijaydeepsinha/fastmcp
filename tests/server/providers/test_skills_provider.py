@@ -919,3 +919,105 @@ async def test_skill_provider_loads_and_serves_utf8_skill_md(
         ref = await client.read_resource(AnyUrl("skill://test-skill/reference.md"))
         assert isinstance(ref[0], TextResourceContents)
         assert "✨" in ref[0].text
+
+
+class TestSkillsSourceContract:
+    """SkillProvider/SkillsDirectoryProvider implement the private
+    `fastmcp.server.extensions.skills._source._SkillsSource` contract."""
+
+    @pytest.fixture
+    def skills_dir(self, tmp_path: Path) -> Path:
+        skills_root = tmp_path / "skills"
+        skills_root.mkdir()
+        skill = skills_root / "my-skill"
+        skill.mkdir()
+        (skill / "SKILL.md").write_text(
+            "---\ndescription: A test skill\n---\n\n# My Skill\n"
+        )
+        (skill / "reference.md").write_text("Reference content.")
+        return skills_root
+
+    async def test_single_provider_main_file_name(self, tmp_path: Path):
+        skill_dir = tmp_path / "solo-skill"
+        skill_dir.mkdir()
+        (skill_dir / "SKILL.md").write_text("---\ndescription: d\n---\nBody")
+        provider = SkillProvider(skill_dir)
+        assert provider.main_file_name == "SKILL.md"
+
+    async def test_single_provider_list_and_get_entry(self, tmp_path: Path):
+        skill_dir = tmp_path / "solo-skill"
+        skill_dir.mkdir()
+        (skill_dir / "SKILL.md").write_text("---\ndescription: d\n---\nBody")
+        (skill_dir / "extra.md").write_text("extra")
+        provider = SkillProvider(skill_dir)
+
+        entries = await provider.list_skill_entries()
+        assert len(entries) == 1
+        entry = entries[0]
+        assert entry.uri == "skill://solo-skill/SKILL.md"
+        assert entry.frontmatter.name == "solo-skill"
+        assert entry.frontmatter.description == "d"
+        assert isinstance(entry.resources, list)
+        assert {r.uri for r in entry.resources} == {
+            "skill://solo-skill/SKILL.md",
+            "skill://solo-skill/extra.md",
+        }
+
+        same = await provider.get_skill_entry("skill://solo-skill/SKILL.md")
+        assert same == entry
+        assert await provider.get_skill_entry("skill://other/SKILL.md") is None
+
+    async def test_directory_provider_main_file_name(self, skills_dir: Path):
+        provider = SkillsDirectoryProvider(skills_dir)
+        assert provider.main_file_name == "SKILL.md"
+
+    async def test_directory_provider_aggregates_entries(self, skills_dir: Path):
+        provider = SkillsDirectoryProvider(skills_dir)
+        entries = await provider.list_skill_entries()
+        assert [e.uri for e in entries] == ["skill://my-skill/SKILL.md"]
+
+        entry = await provider.get_skill_entry("skill://my-skill/SKILL.md")
+        assert entry is not None
+        assert entry.frontmatter.name == "my-skill"
+        assert await provider.get_skill_entry("skill://missing/SKILL.md") is None
+
+    @pytest.mark.parametrize(
+        ("frontmatter", "expected_name"),
+        [
+            ("name: declared-name\ndescription: d", "declared-name"),
+            ("description: d", "real-name"),  # missing name defaults to dir name
+        ],
+    )
+    async def test_frontmatter_name_exact_or_defaulted(
+        self, tmp_path: Path, frontmatter: str, expected_name: str
+    ):
+        # frontmatter.name is exact; only a missing name defaults to the dir name
+        skill_dir = tmp_path / "real-name"
+        skill_dir.mkdir()
+        (skill_dir / "SKILL.md").write_text(f"---\n{frontmatter}\n---\nBody")
+        provider = SkillProvider(skill_dir)
+        entry = (await provider.list_skill_entries())[0]
+        assert entry.frontmatter.name == expected_name
+
+    async def test_declared_name_directory_mismatch_is_not_yet_validated(
+        self, tmp_path: Path
+    ):
+        """Known PR 1 gap, tracked for PR 2: SEP-2640 requires the final
+        `<skill-path>` segment of `uri` to equal `frontmatter.name` (mirroring
+        the Agent Skills spec's own name-matches-directory rule), but nothing
+        in PR 1 validates that relationship -- that's issue #5016's "Strict
+        skill snapshots" step 5, explicit PR 2 scope. This pins today's
+        permissive behavior (the mismatch passes through unchanged) so the
+        test breaks loudly, rather than silently, once PR 2 adds the
+        validation and this entry starts being rejected or reconciled
+        instead."""
+        skill_dir = tmp_path / "dir-name"
+        skill_dir.mkdir()
+        (skill_dir / "SKILL.md").write_text(
+            "---\nname: declared-name\ndescription: d\n---\nBody"
+        )
+        provider = SkillProvider(skill_dir)
+        entry = (await provider.list_skill_entries())[0]
+
+        assert entry.frontmatter.name == "declared-name"
+        assert entry.uri == "skill://dir-name/SKILL.md"

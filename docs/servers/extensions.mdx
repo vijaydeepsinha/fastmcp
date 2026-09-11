@@ -164,3 +164,40 @@ client = Client(
 Advertise only what you genuinely support: the advertisement asserts wire compatibility, and claiming an extension you have not implemented invites the server to use a feature you cannot answer. For anything behavioral, construct the real extension instead.
 
 Claimed result shapes are a modern-protocol feature and stay inert on a legacy connection, so an extension-aware client is still safe to point at an older server.
+
+## Skills
+
+`SkillsExtension` implements the standard [Skills extension](https://github.com/modelcontextprotocol/ext-skills) (`io.modelcontextprotocol/skills`) on top of the existing [Skills Provider](/servers/providers/skills). It does not replace `SkillProvider`/`SkillsDirectoryProvider`, which keep serving skill files as ordinary resources; it adds `skills/list` and `skills/get` so clients that understand the standard extension can discover those same skills without falling back to `resources/list`.
+
+Register it explicitly, passing the same provider instances you registered with `add_provider()`:
+
+```python
+from fastmcp import FastMCP
+from fastmcp.server.extensions.skills import SkillsExtension
+from fastmcp.server.providers.skills import SkillsDirectoryProvider
+
+mcp = FastMCP("Skills")
+skills = SkillsDirectoryProvider("./skills")
+
+mcp.add_provider(skills)
+mcp.add_extension(SkillsExtension(providers=[skills]))
+```
+
+Only directly registered `SkillProvider` and `SkillsDirectoryProvider` instances are supported today. A provider that is mounted, transformed, namespaced, or proxied, or one configured with a main-file name other than `SKILL.md`, fails at `add_extension()` rather than advertise an incomplete catalog.
+
+On the client side, pass `SkillsClientExtension` explicitly — like any extension, Skills support is never enabled silently:
+
+```python
+from fastmcp import Client
+from fastmcp.client.skills import SkillsClientExtension
+
+async with Client(mcp, extensions=[SkillsClientExtension()]) as client:
+    for skill in await client.list_skills():
+        print(skill.uri, skill.frontmatter.description)
+
+    skill = await client.get_skill("skill://my-skill/SKILL.md")
+```
+
+`list_skills_mcp(cursor=...)` returns one protocol page; `list_skills()` follows pagination automatically. `skills/list` and `skills/get` are only available on the modern protocol and only for clients that declared the extension for the request — an unnegotiated call fails clearly rather than falling through to a generic method-not-found error.
+
+This is the protocol and extension foundation: strict frontmatter/manifest validation for filesystem skills, nested-skill discovery, and `resources/directory/read` are later work, tracked in [FastMCP issue #5016](https://github.com/PrefectHQ/fastmcp/issues/5016). Reading skills as ordinary resources continues to work unchanged whether or not `SkillsExtension` is registered.

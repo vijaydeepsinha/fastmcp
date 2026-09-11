@@ -7,6 +7,9 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
+
+from fastmcp.utilities.skills import SkillEntry, SkillFrontmatter, SkillResourceEntry
 
 
 @dataclass
@@ -83,6 +86,52 @@ def compute_file_hash(path: Path) -> str:
         for chunk in iter(lambda: f.read(8192), b""):
             sha256.update(chunk)
     return f"sha256:{sha256.hexdigest()}"
+
+
+def build_skill_entry(skill: SkillInfo, main_file_name: str) -> SkillEntry:
+    """Adapt a provider's loosely-parsed `SkillInfo` into a SEP-2640 `SkillEntry`.
+
+    This is the PR 1 bridge from the existing, permissive filesystem parsing
+    (`parse_frontmatter`, `scan_skill_files`) to the strict Skills extension
+    wire model -- it does not change discovery or parsing behavior. A future
+    PR replaces this with byte-accurate, strictly-validated snapshots; until
+    then, the extension's real-provider catalog reflects exactly what the
+    existing permissive resources already serve.
+
+    `frontmatter.name` is exactly what the skill's `SKILL.md` declares (SEP-2640:
+    "The extension's `frontmatter.name` remains exact"); only a skill whose
+    frontmatter omits `name` entirely falls back to the directory name, matching
+    how `description` already falls back to the provider's parsed description.
+
+    Known gap, deferred to PR 2: SEP-2640 also requires "The final `<skill-path>`
+    segment of the entry's `uri` MUST equal `frontmatter.name`" (Frontmatter),
+    mirroring the Agent Skills spec's own name-matches-directory rule. `uri`
+    here is always built from `skill.name` (the directory), while `frontmatter`
+    keeps whatever the author declared, so a `SKILL.md` whose declared `name`
+    disagrees with its directory produces an entry that violates this MUST with
+    no error. Validating (and rejecting or reconciling) that relationship is
+    explicitly PR 2 work -- issue #5016's "Strict skill snapshots" step 5,
+    "Validate required Agent Skills fields and the URI/name relationship" --
+    not something PR 1's bridge over the existing permissive parser attempts.
+    """
+    frontmatter: dict[str, Any] = dict(skill.frontmatter)
+    frontmatter.setdefault("name", skill.name)
+    frontmatter.setdefault("description", skill.description)
+
+    resources = [
+        SkillResourceEntry(
+            uri=f"skill://{skill.name}/{quote(f.path, safe='/')}",
+            digest=f.hash,
+            size=f.size,
+        )
+        for f in skill.files
+    ]
+
+    return SkillEntry(
+        uri=f"skill://{skill.name}/{quote(main_file_name, safe='/')}",
+        frontmatter=SkillFrontmatter.model_validate(frontmatter),
+        resources=resources,
+    )
 
 
 def scan_skill_files(skill_dir: Path) -> list[SkillFileInfo]:
