@@ -17,10 +17,12 @@ from fastmcp.resources.template import ResourceTemplate
 from fastmcp.server.providers.base import Provider
 from fastmcp.server.providers.skills._common import (
     SkillInfo,
+    build_skill_entry,
     parse_frontmatter,
     scan_skill_files,
 )
 from fastmcp.utilities.logging import get_logger
+from fastmcp.utilities.skills import SkillEntry
 from fastmcp.utilities.versions import VersionSpec
 
 logger = get_logger(__name__)
@@ -450,3 +452,20 @@ class SkillProvider(Provider):
             f"SkillProvider(skill_path={self._skill_path!r}, "
             f"supporting_files={self._supporting_files!r})"
         )
+
+    # -------------------------------------------------------------------------
+    # Skills extension source contract (fastmcp.server.extensions.skills)
+    # -------------------------------------------------------------------------
+
+    @property
+    def main_file_name(self) -> str:
+        """The configured main-file name, checked by `SkillsExtension` at
+        registration (only the default `SKILL.md` is extension-compatible)."""
+        return self._main_file_name
+
+    async def list_skill_entries(self) -> Sequence[SkillEntry]:
+        return [build_skill_entry(self.skill_info, self._main_file_name)]
+
+    async def get_skill_entry(self, uri: str) -> SkillEntry | None:
+        entry = build_skill_entry(self.skill_info, self._main_file_name)
+        return entry if entry.uri == uri else None

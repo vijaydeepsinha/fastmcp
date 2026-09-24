@@ -11,6 +11,7 @@ from fastmcp.resources.template import ResourceTemplate
 from fastmcp.server.providers.aggregate import AggregateProvider
 from fastmcp.server.providers.skills.skill_provider import SkillProvider
 from fastmcp.utilities.logging import get_logger
+from fastmcp.utilities.skills import SkillEntry
 from fastmcp.utilities.versions import VersionSpec
 
 logger = get_logger(__name__)
@@ -151,3 +152,30 @@ class SkillsDirectoryProvider(AggregateProvider):
             f"SkillsDirectoryProvider(roots={roots_repr!r}, "
             f"reload={self._reload}, skills={len(self.providers)})"
         )
+
+    # -------------------------------------------------------------------------
+    # Skills extension source contract (fastmcp.server.extensions.skills)
+    # -------------------------------------------------------------------------
+
+    @property
+    def main_file_name(self) -> str:
+        """The configured main-file name, checked by `SkillsExtension` at
+        registration (only the default `SKILL.md` is extension-compatible)."""
+        return self._main_file_name
+
+    async def list_skill_entries(self) -> Sequence[SkillEntry]:
+        await self._ensure_discovered()
+        entries: list[SkillEntry] = []
+        for provider in self.providers:
+            assert isinstance(provider, SkillProvider)
+            entries.extend(await provider.list_skill_entries())
+        return entries
+
+    async def get_skill_entry(self, uri: str) -> SkillEntry | None:
+        await self._ensure_discovered()
+        for provider in self.providers:
+            assert isinstance(provider, SkillProvider)
+            entry = await provider.get_skill_entry(uri)
+            if entry is not None:
+                return entry
+        return None

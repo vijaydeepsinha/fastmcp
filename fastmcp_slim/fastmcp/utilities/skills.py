@@ -4,14 +4,150 @@ from __future__ import annotations
 
 import base64
 import json
+import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 import mcp_types
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 if TYPE_CHECKING:
     from fastmcp.client import Client
+
+#: Reverse-DNS identifier of the SEP-2640 Skills extension
+#: (`io.modelcontextprotocol/skills`). Shared by the server-side
+#: `SkillsExtension` and the client-side `SkillsClientExtension` so neither
+#: needs to import the other's package.
+SKILLS_EXTENSION_ID = "io.modelcontextprotocol/skills"
+
+_DIGEST_PATTERN = re.compile(r"^sha256:[0-9a-f]{64}$")
+
+
+def missing_capability_error_data() -> dict[str, object]:
+    """Build the `data.requiredCapabilities` payload for a -32021 error.
+
+    `skills/list`/`skills/get` called without the client opting the Skills
+    extension in for the request return this so the client learns which
+    capability to declare, mirroring the tasks extension's
+    `missing_capability_error_data`.
+    """
+    return {"requiredCapabilities": {"extensions": {SKILLS_EXTENSION_ID: {}}}}
+
+
+# -----------------------------------------------------------------------------
+# SEP-2640 wire protocol models
+#
+# These mirror the `Skill`/`SkillResource` shapes defined by the Skills
+# extension specification (ext-skills `specification/stable/skills.mdx`).
+# `SkillEntry` is the single entry shape returned, identically, by both
+# `skills/list` and `skills/get` -- the spec calls it "a complete manifest of
+# the skill rather than a summary", so there is no separate summary model.
+# -----------------------------------------------------------------------------
+
+
+class SkillFrontmatter(BaseModel):
+    """A skill's `SKILL.md` YAML frontmatter, rendered verbatim as JSON.
+
+    `name` and `description` are required by the Agent Skills specification and
+    therefore always present. Every other author-written field passes through
+    unchanged (`extra="allow"`), per SEP-2640's frontmatter contract.
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    name: str
+    description: str
+
+
+class SkillResourceEntry(BaseModel):
+    """One file of a skill, with the digest and size of its raw bytes.
+
+    Called `SkillResource` in the SEP-2640 spec; named `SkillResourceEntry`
+    here to avoid colliding with `fastmcp.resources.base.Resource`.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    uri: str
+    digest: str
+    size: int = Field(ge=0)
+
+    @field_validator("digest")
+    @classmethod
+    def _validate_digest(cls, v: str) -> str:
+        if not _DIGEST_PATTERN.match(v):
+            raise ValueError(
+                f"digest must be 'sha256:' followed by 64 lowercase hex "
+                f"characters, got {v!r}"
+            )
+        return v
+
+
+class SkillEntry(BaseModel):
+    """The entry for a single skill, identical in shape from `skills/list` and
+    `skills/get`.
+
+    `resources` is either a complete enumeration of the skill's files or the
+    literal string `"dynamic"` for skills whose content is generated such that
+    stable digests cannot be published.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    uri: str
+    frontmatter: SkillFrontmatter
+    resources: list[SkillResourceEntry] | Literal["dynamic"]
+
+
+class GetSkillRequestParams(mcp_types.RequestParams):
+    """Params for `skills/get`."""
+
+    uri: str
+
+
+class GetSkillRequest(mcp_types.Request[GetSkillRequestParams, Literal["skills/get"]]):
+    """Client-side wire request for `skills/get`."""
+
+    method: Literal["skills/get"] = "skills/get"
+    params: GetSkillRequestParams
+
+
+class ListSkillsRequest(mcp_types.PaginatedRequest[Literal["skills/list"]]):
+    """Client-side wire request for `skills/list`."""
+
+    method: Literal["skills/list"] = "skills/list"
+
+
+class ListSkillsResult(mcp_types.PaginatedResult, mcp_types.CacheableResult):
+    """Result of `skills/list`: a page of the server's skill catalog."""
+
+    result_type: mcp_types.ResultType = "complete"
+    skills: list[SkillEntry] = Field(default_factory=list)
+
+
+class GetSkillResult(mcp_types.Result):
+    """Result of `skills/get`: the entry for the requested skill."""
+
+    result_type: mcp_types.ResultType = "complete"
+    skill: SkillEntry
+
+
+class SkillsExtensionSettings(BaseModel):
+    """Per-extension settings advertised at `capabilities.extensions[identifier]`.
+
+    `directory_read` is always `False` in this release (`resources/directory/read`
+    is not yet implemented), so `model_dump` always produces `{}` -- an empty
+    object per SEP-2640 meaning "support for the extension with no optional
+    features".
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    directory_read: bool = Field(default=False, serialization_alias="directoryRead")
+
+    def to_wire(self) -> dict[str, bool]:
+        return self.model_dump(by_alias=True, exclude_defaults=True)
 
 
 @dataclass
@@ -45,6 +181,14 @@ async def list_skills(client: Client) -> list[SkillSummary]:
 
     Discovers skills by finding resources with URIs matching the
     `skill://{name}/SKILL.md` pattern.
+
+    Predates the SEP-2640 Skills extension and works against any server that
+    exposes skills as plain resources, with no server-side opt-in required.
+    For a server that registers `SkillsExtension`, prefer the protocol-level
+    `Client.list_skills()` (`ClientSkillsMixin`, requires
+    `Client(..., extensions=[SkillsClientExtension()])`), which returns typed
+    `SkillEntry` objects rather than `SkillSummary` and works even when a
+    skill's supporting files aren't individually listed as resources.
 
     Args:
         client: Connected FastMCP client
